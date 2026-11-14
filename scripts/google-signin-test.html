@@ -1,0 +1,60 @@
+<!doctype html>
+<!--
+  Test helper: get a Google ID token for the citizen login API (until the Next.js frontend exists).
+  Serve it from the project root:   npx http-server scripts -p 3001
+  Open:                             http://localhost:3001/google-signin-test.html
+  Google Cloud Console → your OAuth client → Authorized JavaScript origins must include http://localhost:3001
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Smart City — Google sign-in test</title>
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
+    <style>
+      body { font-family: system-ui, sans-serif; max-width: 760px; margin: 40px auto; padding: 0 16px; color: #1f2933; }
+      input, textarea { width: 100%; font: 13px monospace; padding: 8px; box-sizing: border-box; }
+      textarea { height: 160px; }
+      button { padding: 8px 14px; cursor: pointer; }
+      .row { margin: 16px 0; }
+      .muted { color: #7b8794; font-size: 13px; }
+    </style>
+  </head>
+  <body>
+    <h2>Google sign-in test</h2>
+    <div class="row">
+      <label>Google client ID (same as GOOGLE_CLIENT_ID in .env)</label>
+      <input id="clientId" placeholder="xxxx.apps.googleusercontent.com" />
+      <p><button id="init">Show Google button</button></p>
+    </div>
+    <div class="row" id="gbtn"></div>
+    <div class="row">
+      <label>ID token — paste into Postman variable <b>googleIdToken</b> (valid ~1 hour)</label>
+      <textarea id="token" readonly></textarea>
+      <p><button id="copy">Copy token</button> <span id="who" class="muted"></span></p>
+    </div>
+    <script>
+      const input = document.getElementById('clientId');
+      input.value = localStorage.getItem('gClientId') || '';
+
+      document.getElementById('init').onclick = () => {
+        const clientId = input.value.trim();
+        if (!clientId) return alert('Paste your client ID first');
+        localStorage.setItem('gClientId', clientId);
+        google.accounts.id.initialize({
+          client_id: clientId,
+          callback: (response) => {
+            document.getElementById('token').value = response.credential;
+            const payload = JSON.parse(atob(response.credential.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
+            document.getElementById('who').textContent = `Signed in as ${payload.name} <${payload.email}>`;
+          },
+        });
+        google.accounts.id.renderButton(document.getElementById('gbtn'), { theme: 'outline', size: 'large' });
+      };
+
+      document.getElementById('copy').onclick = async () => {
+        await navigator.clipboard.writeText(document.getElementById('token').value);
+        document.getElementById('copy').textContent = 'Copied!';
+      };
+    </script>
+  </body>
+</html>

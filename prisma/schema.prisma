@@ -1,0 +1,326 @@
+// AI Smart City — database schema (Prisma 7)
+// The database URL lives in prisma.config.ts (reads DATABASE_URL from .env)
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─────────────────────────── Enums ───────────────────────────
+
+enum StaffRole {
+  SUPER_ADMIN
+  DEPARTMENT_ADMIN
+  OFFICER
+}
+
+enum ComplaintPriority {
+  LOW
+  NORMAL
+  HIGH
+  CRITICAL
+}
+
+enum ComplaintStatus {
+  SUBMITTED
+  ASSIGNED
+  IN_PROGRESS
+  RESOLVED
+  CLOSED
+  REJECTED
+}
+
+enum DraftStatus {
+  PENDING
+  SUPERSEDED
+  CONFIRMED
+  DISCARDED
+}
+
+enum ChatRole {
+  USER
+  ASSISTANT
+  SYSTEM
+  TOOL
+}
+
+enum ChatMessageType {
+  TEXT
+  COMPLAINT_DRAFT
+  COMPLAINT_CONFIRMATION
+}
+
+// ─────────────────────────── People ───────────────────────────
+
+// Citizens sign in with Google before they can chat
+model Citizen {
+  id          String    @id @default(uuid()) @db.Uuid
+  name        String
+  email       String    @unique
+  phone       String?
+  googleSub   String?   @unique @map("google_sub") // Google's stable user id
+  avatarUrl   String?   @map("avatar_url")
+  lastLoginAt DateTime? @map("last_login_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  complaints    Complaint[]
+  chatSessions  ChatSession[]
+  refreshTokens CitizenRefreshToken[]
+
+  @@map("citizens")
+}
+
+// Separate from staff refresh tokens so the two login systems can never mix
+model CitizenRefreshToken {
+  id        String    @id @default(uuid()) @db.Uuid
+  citizenId String    @map("citizen_id") @db.Uuid
+  tokenHash String    @unique @map("token_hash")
+  familyId  String    @map("family_id") @db.Uuid
+  expiresAt DateTime  @map("expires_at")
+  revokedAt DateTime? @map("revoked_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  citizen Citizen @relation(fields: [citizenId], references: [id], onDelete: Cascade)
+
+  @@index([citizenId])
+  @@index([familyId])
+  @@map("citizen_refresh_tokens")
+}
+
+model Department {
+  id               String   @id @default(uuid()) @db.Uuid
+  code             String   @unique // e.g. ROADS, WATER, ELECTRICITY
+  name             String
+  description      String
+  contactEmail     String   @map("contact_email")
+  slaHoursCritical Int      @default(4) @map("sla_hours_critical")
+  slaHoursHigh     Int      @default(24) @map("sla_hours_high")
+  slaHoursNormal   Int      @default(72) @map("sla_hours_normal")
+  slaHoursLow      Int      @default(168) @map("sla_hours_low")
+  isActive         Boolean  @default(true) @map("is_active")
+  // Gemini embedding of name + description, used to match complaints to departments
+  embedding        Unsupported("vector(768)")?
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  staff      StaffUser[]
+  complaints Complaint[]
+  drafts     ComplaintDraft[]
+
+  @@map("departments")
+}
+
+model StaffUser {
+  id           String    @id @default(uuid()) @db.Uuid
+  name         String
+  email        String    @unique
+  passwordHash String    @map("password_hash")
+  role         StaffRole
+  departmentId String?   @map("department_id") @db.Uuid // null for SUPER_ADMIN
+  isActive     Boolean   @default(true) @map("is_active")
+  lastLoginAt  DateTime? @map("last_login_at")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  department         Department?              @relation(fields: [departmentId], references: [id])
+  assignedComplaints Complaint[]              @relation("AssignedOfficer")
+  statusChanges      ComplaintStatusHistory[]
+  refreshTokens      RefreshToken[]
+
+  @@index([departmentId])
+  @@map("staff_users")
+}
+
+// Stores only a hash of each refresh token, so tokens can be rotated and revoked
+model RefreshToken {
+  id          String    @id @default(uuid()) @db.Uuid
+  staffUserId String    @map("staff_user_id") @db.Uuid
+  tokenHash   String    @unique @map("token_hash")
+  familyId    String    @map("family_id") @db.Uuid // all rotations of one login share a family
+  expiresAt   DateTime  @map("expires_at")
+  revokedAt   DateTime? @map("revoked_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  staffUser StaffUser @relation(fields: [staffUserId], references: [id], onDelete: Cascade)
+
+  @@index([staffUserId])
+  @@index([familyId])
+  @@map("refresh_tokens")
+}
+
+// ─────────────────────────── Chat ───────────────────────────
+
+model ChatSession {
+  id        String   @id @default(uuid()) @db.Uuid
+  citizenId String?  @map("citizen_id") @db.Uuid // always set for new sessions (sign-in required); nullable for old rows
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  citizen    Citizen?         @relation(fields: [citizenId], references: [id])
+  messages   ChatMessage[]
+  drafts     ComplaintDraft[]
+  complaints Complaint[]
+
+  @@index([citizenId, createdAt])
+  @@map("chat_sessions")
+}
+
+model ChatMessage {
+  id        String          @id @default(uuid()) @db.Uuid
+  sessionId String          @map("session_id") @db.Uuid
+  role      ChatRole
+  type      ChatMessageType @default(TEXT)
+  content   String
+  payload   Json? // draft card / confirmation card data
+  createdAt DateTime        @default(now()) @map("created_at")
+
+  session ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, createdAt])
+  @@map("chat_messages")
+}
+
+// ─────────────────────────── Complaints ───────────────────────────
+
+// What the bot shows on the draft card. Only becomes a Complaint after the user clicks Submit.
+model ComplaintDraft {
+  id           String            @id @default(uuid()) @db.Uuid
+  sessionId    String            @map("session_id") @db.Uuid
+  version      Int               @default(1)
+  status       DraftStatus       @default(PENDING)
+  citizenName  String            @map("citizen_name")
+  citizenEmail String            @map("citizen_email")
+  citizenPhone String?           @map("citizen_phone")
+  departmentId String            @map("department_id") @db.Uuid
+  category     String
+  priority     ComplaintPriority
+  title        String
+  description  String
+  address      String
+  latitude     Float?
+  longitude    Float?
+  photoKeys    String[]          @map("photo_keys") // R2 object keys
+  createdAt    DateTime          @default(now()) @map("created_at")
+
+  session    ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  department Department  @relation(fields: [departmentId], references: [id])
+  complaint  Complaint?
+
+  @@index([sessionId, status])
+  @@map("complaint_drafts")
+}
+
+model Complaint {
+  id                String            @id @default(uuid()) @db.Uuid
+  ticketNumber      String            @unique @map("ticket_number") // e.g. SC-2026-00123
+  citizenId         String            @map("citizen_id") @db.Uuid
+  departmentId      String            @map("department_id") @db.Uuid
+  assignedOfficerId String?           @map("assigned_officer_id") @db.Uuid
+  sessionId         String?           @map("session_id") @db.Uuid
+  draftId           String?           @unique @map("draft_id") @db.Uuid // one draft → at most one complaint
+  idempotencyKey    String            @unique @map("idempotency_key") // stops double-submit
+  category          String
+  priority          ComplaintPriority
+  status            ComplaintStatus   @default(SUBMITTED)
+  title             String
+  description       String
+  address           String
+  latitude          Float?
+  longitude         Float?
+  // Gemini embedding of title + description, used for duplicate detection
+  embedding         Unsupported("vector(768)")?
+  duplicateOfId     String?           @map("duplicate_of_id") @db.Uuid
+  slaDueAt          DateTime?         @map("sla_due_at")
+  escalatedAt       DateTime?         @map("escalated_at") // set once when the SLA deadline passes
+  resolvedAt        DateTime?         @map("resolved_at")
+  createdAt         DateTime          @default(now()) @map("created_at")
+  updatedAt         DateTime          @updatedAt @map("updated_at")
+
+  citizen         Citizen                  @relation(fields: [citizenId], references: [id])
+  department      Department               @relation(fields: [departmentId], references: [id])
+  assignedOfficer StaffUser?               @relation("AssignedOfficer", fields: [assignedOfficerId], references: [id])
+  session         ChatSession?             @relation(fields: [sessionId], references: [id])
+  draft           ComplaintDraft?          @relation(fields: [draftId], references: [id])
+  duplicateOf     Complaint?               @relation("Duplicates", fields: [duplicateOfId], references: [id])
+  duplicates      Complaint[]              @relation("Duplicates")
+  attachments     ComplaintAttachment[]
+  statusHistory   ComplaintStatusHistory[]
+
+  @@index([departmentId, status])
+  @@index([assignedOfficerId, status])
+  @@index([status, priority])
+  @@index([createdAt])
+  @@index([slaDueAt, escalatedAt])
+  @@map("complaints")
+}
+
+model ComplaintAttachment {
+  id          String   @id @default(uuid()) @db.Uuid
+  complaintId String   @map("complaint_id") @db.Uuid
+  objectKey   String   @map("object_key") // R2 key
+  contentType String   @map("content_type")
+  sizeBytes   Int      @map("size_bytes")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  complaint Complaint @relation(fields: [complaintId], references: [id], onDelete: Cascade)
+
+  @@index([complaintId])
+  @@map("complaint_attachments")
+}
+
+model ComplaintStatusHistory {
+  id          String           @id @default(uuid()) @db.Uuid
+  complaintId String           @map("complaint_id") @db.Uuid
+  oldStatus   ComplaintStatus? @map("old_status")
+  newStatus   ComplaintStatus  @map("new_status")
+  changedById String?          @map("changed_by_id") @db.Uuid // null = system/citizen
+  remark      String?
+  createdAt   DateTime         @default(now()) @map("created_at")
+
+  complaint Complaint  @relation(fields: [complaintId], references: [id], onDelete: Cascade)
+  changedBy StaffUser? @relation(fields: [changedById], references: [id])
+
+  @@index([complaintId, createdAt])
+  @@map("complaint_status_history")
+}
+
+// Yearly counter for readable ticket numbers (SC-2026-00123)
+model TicketSequence {
+  year    Int @id
+  lastSeq Int @default(0) @map("last_seq")
+
+  @@map("ticket_sequences")
+}
+
+// ─────────────────────────── Messaging ───────────────────────────
+
+// Written in the SAME transaction as the business change; the relay publishes to Kafka
+model OutboxEvent {
+  id            String    @id @default(uuid()) @db.Uuid
+  aggregateType String    @map("aggregate_type") // e.g. "complaint"
+  aggregateId   String    @map("aggregate_id") @db.Uuid // used as the Kafka message key
+  eventType     String    @map("event_type") // e.g. "complaint.created"
+  payload       Json
+  attempts      Int       @default(0)
+  lastError     String?   @map("last_error")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  publishedAt   DateTime? @map("published_at")
+
+  @@index([publishedAt, createdAt])
+  @@map("outbox_events")
+}
+
+// Makes Kafka consumers idempotent: one row per (event, consumer)
+model ProcessedEvent {
+  eventId     String   @map("event_id") @db.Uuid
+  consumer    String
+  processedAt DateTime @default(now()) @map("processed_at")
+
+  @@id([eventId, consumer])
+  @@map("processed_events")
+}
