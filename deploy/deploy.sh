@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Pulls the latest main branch and rebuilds/restarts the stack.
 # Run by GitHub Actions over SSH (forced command in ~/.ssh/authorized_keys),
-# and safe to run by hand:  bash ~/smart-city-backend/deploy/deploy.sh
+# and safe to run by hand:  bash <repo folder>/deploy/deploy.sh
+# Works from whatever folder the repo was cloned into.
 #
 # Everything lives inside main() so bash reads the whole script before running it:
 # the git reset below may replace this very file while it runs.
@@ -9,8 +10,9 @@
 main() {
   set -Eeuo pipefail
 
-  local repo_dir="$HOME/smart-city-backend"
-  local deploy_dir="$repo_dir/deploy"
+  local deploy_dir repo_dir
+  deploy_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  repo_dir="$(dirname "$deploy_dir")"
   local compose=(docker compose -f "$deploy_dir/docker-compose.prod.yml" --project-directory "$deploy_dir")
 
   log() { printf '[deploy %s] %s\n' "$(date '+%H:%M:%S')" "$*"; }

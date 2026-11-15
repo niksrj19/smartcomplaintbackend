@@ -29,9 +29,9 @@ jobs:
       # Prisma's config may read DATABASE_URL; generate never connects, so a placeholder is enough
       DATABASE_URL: postgresql://ci:ci@localhost:5432/ci?schema=public
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -84,7 +84,7 @@ jobs:
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
         # The server runs deploy/deploy.sh for this key no matter what command is sent
         run: |
-          ssh -i ~/.ssh/deploy_key \
+          ssh -T -i ~/.ssh/deploy_key \
               -o BatchMode=yes \
               -o StrictHostKeyChecking=yes \
               -o ServerAliveInterval=30 \
