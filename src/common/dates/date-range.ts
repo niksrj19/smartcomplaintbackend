@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 /**
  * Date ranges for analytics and filters. Days are calendar days in India (IST, UTC+05:30),
- * so "1 Nov to 7 Nov" means what a city official expects, whatever the server's time zone.
+ * so "1 Nov to 7 Nov" means  a city official expects, whatever the server's time zone.
  */
 export const IST_OFFSET = '+05:30';
 const DAY_MS = 24 * 60 * 60 * 1000;
